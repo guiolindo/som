@@ -1,0 +1,18 @@
+__pycache__/
+*.pyc
+*.pyo
+cert.pem
+key.pem
+
+# Android
+android/.gradle/
+android/.idea/
+android/local.properties
+android/build/
+android/app/build/
+android/app/release/
+*.iml
+.DS_Store
+
+# Editor
+.vscode/
