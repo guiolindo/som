@@ -56,7 +56,7 @@ dependencies {
     implementation("androidx.compose.material:material-icons-extended")
 
     // WebRTC nativo da Google — inclui AAudio backend p/ low-latency
-    implementation("io.github.webrtc-sdk:android:114.5735.10")
+    implementation("io.github.webrtc-sdk:android:125.6422.07")
 
     // HTTP client para signaling /offer
     implementation("com.squareup.okhttp3:okhttp:4.12.0")
