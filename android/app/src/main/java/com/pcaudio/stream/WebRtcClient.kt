@@ -204,13 +204,17 @@ class WebRtcClient(private val context: Context) {
                     for (stat in report.statsMap.values) {
                         when (stat.type) {
                             "inbound-rtp" -> {
-                                val bytesNow = (stat.members["bytesReceived"] as? Number)?.toLong() ?: 0
-                                val now = stat.timestampUs / 1000
-                                if (lastBytesReceived > 0 && now > lastStatsTime) {
-                                    bitrate = (((bytesNow - lastBytesReceived) * 8) / (now - lastStatsTime) / 1000 * 1000).toInt()
+                                val bytesNow = (stat.members["bytesReceived"] as? Number)?.toLong() ?: 0L
+                                // timestampUs no SDK e double; convertemos pra Long em ms
+                                val nowMs = (stat.timestampUs / 1000.0).toLong()
+                                if (lastBytesReceived > 0L && nowMs > lastStatsTime) {
+                                    val dt = nowMs - lastStatsTime               // ms
+                                    val db = bytesNow - lastBytesReceived        // bytes
+                                    // bps = bytes*8*1000/ms; kbps = bps/1000 = bytes*8/ms
+                                    bitrate = ((db * 8L) / dt).toInt()
                                 }
                                 lastBytesReceived = bytesNow
-                                lastStatsTime = now
+                                lastStatsTime = nowMs
                                 jitter = ((stat.members["jitter"] as? Number)?.toDouble() ?: 0.0) * 1000
                                 lost = (stat.members["packetsLost"] as? Number)?.toInt() ?: 0
                             }
