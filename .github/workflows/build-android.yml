@@ -42,13 +42,31 @@ jobs:
       - name: Aceitar licencas do Android SDK
         run: yes | sdkmanager --licenses > /dev/null 2>&1 || true
 
-      - name: Compilar APK debug (mais rapido, instalavel direto)
-        run: gradle assembleDebug --no-daemon --stacktrace
+      - name: Compilar APK debug
+        id: build
+        continue-on-error: true
+        run: |
+          set -o pipefail
+          gradle assembleDebug --no-daemon --stacktrace --info -x lint 2>&1 | tee /tmp/build.log
+
+      - name: Upload do log de build (sucesso ou falha)
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: build-log-${{ github.run_number }}
+          path: /tmp/build.log
+          if-no-files-found: warn
+          retention-days: 7
 
       - name: Upload do APK
+        if: steps.build.outcome == 'success'
         uses: actions/upload-artifact@v4
         with:
           name: PCAudioStream-${{ github.run_number }}
           path: android/app/build/outputs/apk/debug/app-debug.apk
           if-no-files-found: error
           retention-days: 30
+
+      - name: Falhar o job se build falhou
+        if: steps.build.outcome != 'success'
+        run: exit 1
