@@ -65,6 +65,9 @@ class MainActivity : ComponentActivity() {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
+        // Botoes de volume controlam MIDIA (nao chamada nem toque)
+        volumeControlStream = AudioManager.STREAM_MUSIC
+
         val am = getSystemService(AUDIO_SERVICE) as AudioManager
         am.mode = AudioManager.MODE_NORMAL
 

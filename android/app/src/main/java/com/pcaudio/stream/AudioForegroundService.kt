@@ -8,6 +8,9 @@ import android.app.Service
 import android.content.Context
 import android.content.Intent
 import android.content.pm.ServiceInfo
+import android.media.AudioAttributes
+import android.media.AudioFocusRequest
+import android.media.AudioManager
 import android.net.wifi.WifiManager
 import android.os.Binder
 import android.os.Build
@@ -33,6 +36,8 @@ class AudioForegroundService : Service() {
     private var client: WebRtcClient? = null
     private var wifiLock: WifiManager.WifiLock? = null
     private var wakeLock: PowerManager.WakeLock? = null
+    private var focusRequest: AudioFocusRequest? = null
+    private var audioManager: AudioManager? = null
 
     var listener: WebRtcClient.Listener? = null
         set(value) {
@@ -62,6 +67,7 @@ class AudioForegroundService : Service() {
     }
 
     override fun onDestroy() {
+        abandonAudioFocus()
         client?.release()
         client = null
         releaseLocks()
@@ -70,11 +76,13 @@ class AudioForegroundService : Service() {
 
     fun connect(serverUrl: String, quality: String, stereo: Boolean) {
         updateNotification("Conectando em $serverUrl...")
+        requestAudioFocus()
         client?.connect(serverUrl, quality, stereo)
     }
 
     fun disconnect() {
         client?.disconnect()
+        abandonAudioFocus()
         updateNotification("Pronto")
     }
 
@@ -88,6 +96,35 @@ class AudioForegroundService : Service() {
             else                                            -> "Pronto"
         }
         updateNotification(text)
+    }
+
+    // ── AudioFocus de MIDIA (nao chamada) ───────────────────────────────
+    // Sinaliza ao Android que estamos tocando musica, garantindo:
+    //   - Roteamento p/ STREAM_MUSIC (volume "Midia", nao "Chamada")
+    //   - Audio nao e pausado quando a tela apaga
+    //   - Outros apps de audio pausam quando entramos (comportamento musical)
+    private fun requestAudioFocus() {
+        if (audioManager == null) {
+            audioManager = applicationContext.getSystemService(Context.AUDIO_SERVICE) as AudioManager
+        }
+        val am = audioManager ?: return
+        val attrs = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_MEDIA)
+            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+            .build()
+        val req = AudioFocusRequest.Builder(AudioManager.AUDIOFOCUS_GAIN)
+            .setAudioAttributes(attrs)
+            .setAcceptsDelayedFocusGain(false)
+            .setWillPauseWhenDucked(false)
+            .setOnAudioFocusChangeListener { /* ignora — nao queremos pausar */ }
+            .build()
+        focusRequest = req
+        try { am.requestAudioFocus(req) } catch (_: Exception) {}
+    }
+
+    private fun abandonAudioFocus() {
+        try { focusRequest?.let { audioManager?.abandonAudioFocusRequest(it) } } catch (_: Exception) {}
+        focusRequest = null
     }
 
     // ── Locks contra power-save (Wi-Fi e CPU) ───────────────────────────

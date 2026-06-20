@@ -1,6 +1,7 @@
 package com.pcaudio.stream
 
 import android.content.Context
+import android.media.AudioAttributes
 import kotlinx.coroutines.*
 import okhttp3.MediaType.Companion.toMediaType
 import okhttp3.OkHttpClient
@@ -86,11 +87,22 @@ class WebRtcClient(private val context: Context) {
                 .createInitializationOptions()
         )
 
+        // AudioAttributes USAGE_MEDIA / CONTENT_TYPE_MUSIC — instrucao critica
+        // pro Android rotear o audio como MIDIA (STREAM_MUSIC), nao chamada.
+        // Sem isso, WebRTC vai pro STREAM_VOICE_CALL: volume errado, sistema
+        // pausa quando a tela apaga, qualidade "telefone".
+        val musicAttrs = AudioAttributes.Builder()
+            .setUsage(AudioAttributes.USAGE_MEDIA)
+            .setContentType(AudioAttributes.CONTENT_TYPE_MUSIC)
+            .setFlags(AudioAttributes.FLAG_LOW_LATENCY)
+            .build()
+
         // ADM (AudioDeviceModule) — chave da baixa latencia.
         // useLowLatency=true habilita caminho AAudio quando o device suporta.
         // Desligamos AEC/NS/AGC porque queremos audio musical, nao voz.
         val adm = JavaAudioDeviceModule.builder(context)
             .setUseLowLatency(true)
+            .setAudioAttributes(musicAttrs)
             .setUseHardwareAcousticEchoCanceler(false)
             .setUseHardwareNoiseSuppressor(false)
             .createAudioDeviceModule()

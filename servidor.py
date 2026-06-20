@@ -439,19 +439,37 @@ def get_all_ips() -> list:
 # Opus low-latency tuning: forca o encoder ao modo mais agressivo de latencia
 # ---------------------------------------------------------------------------
 def patch_opus_for_lowlatency():
-    """Reduz frame opus se possivel; configura encoder pra latencia minima."""
+    """Configura encoder opus pra musica em LAN: bitrate constante, low-delay."""
     try:
-        # aiortc encoder padrao usa 20ms frames; ja eh bom.
-        # Forca aplication=VOIP+RESTRICTED_LOWDELAY se a versao expoe.
         from aiortc.codecs.opus import OpusEncoder  # type: ignore
+        from ctypes import c_int
+
         orig_init = OpusEncoder.__init__
 
         def patched(self, *a, **kw):
             orig_init(self, *a, **kw)
+            # tenta acessar a libopus subjacente pra setar VBR=off e bitrate
+            enc = getattr(self, "encoder", None) or getattr(self, "_encoder", None)
+            if enc is None:
+                return
             try:
-                import opuslib
-                # OPUS_APPLICATION_RESTRICTED_LOWDELAY = 2051
-                self.encoder.application = 2051  # type: ignore
+                # aiortc usa pylibsrtp/pyav opus internal -- expoe libopus via _opus_lib
+                import aiortc.codecs.opus as opus_mod  # type: ignore
+                lib = getattr(opus_mod, "lib", None) or getattr(opus_mod, "_lib", None)
+                if lib is None:
+                    return
+                # OPUS_SET_VBR(0) = bitrate constante (sem variacao = consistente)
+                # OPUS_SET_VBR_CONSTRAINT(1) = ainda mais rigido
+                # OPUS_SET_BITRATE = bitrate exato
+                # OPUS_SET_COMPLEXITY = 10 (max qualidade, gasta CPU)
+                try: lib.opus_encoder_ctl(enc, 4006, c_int(0))     # SET_VBR=0
+                except Exception: pass
+                try: lib.opus_encoder_ctl(enc, 4020, c_int(1))     # SET_VBR_CONSTRAINT=1
+                except Exception: pass
+                try: lib.opus_encoder_ctl(enc, 4010, c_int(10))    # SET_COMPLEXITY=10
+                except Exception: pass
+                try: lib.opus_encoder_ctl(enc, 4046, c_int(1))     # SET_PREDICTION_DISABLED=1 (low-delay)
+                except Exception: pass
             except Exception:
                 pass
 
@@ -484,14 +502,23 @@ def _set_opus_params(sdp: str, bitrate: int, stereo: bool) -> str:
     for line in lines:
         if pt and line.startswith(f"a=fmtp:{pt}"):
             parts = line.split(" ", 1)
+            # Parametros opus (RFC 7587) otimizados para audio musical em LAN:
+            #  - cbr=1: bitrate constante (sem adaptacao = sem picos de variacao)
+            #  - usedtx=0: sem detecao de silencio (que cortaria audio musical)
+            #  - useinbandfec=1: correcao de erro inline (recupera perdas)
+            #  - maxplaybackrate=48000: forca o full-band (audio musical)
+            #  - minptime/maxptime=20: frame fixo de 20ms (consistente)
             extras = [
                 f"maxaveragebitrate={bitrate}",
                 f"stereo={1 if stereo else 0}",
                 f"sprop-stereo={1 if stereo else 0}",
+                "maxplaybackrate=48000",
+                "sprop-maxcapturerate=48000",
+                "cbr=1",
                 "useinbandfec=1",
                 "usedtx=0",
-                "minptime=10",
-                "maxptime=20",
+                "minptime=20",
+                "ptime=20",
             ]
             line = parts[0] + " " + ";".join(extras)
         out.append(line)
