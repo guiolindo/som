@@ -568,8 +568,10 @@ def print_banner(ips):
 async def main():
     global main_loop, audio_queue, capture_running
     main_loop = asyncio.get_running_loop()
-    # fila com cap pequeno: jitter buffer fica no cliente (WebRTC), nao no servidor.
-    audio_queue = asyncio.Queue(maxsize=5)
+    # Fila com folga: jitter buffer real fica no cliente WebRTC.
+    # 20 frames * 20ms = 400ms de margem pra absorver pause de GC do Python,
+    # jitter de asyncio, etc. Sem isso, qualquer hiccup vira drop -> picota.
+    audio_queue = asyncio.Queue(maxsize=20)
 
     patch_opus_for_lowlatency()
     threading.Thread(target=capture_thread, daemon=True).start()

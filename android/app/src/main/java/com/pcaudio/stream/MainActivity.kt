@@ -1,11 +1,20 @@
 package com.pcaudio.stream
 
+import android.Manifest
+import android.content.ComponentName
 import android.content.Context
+import android.content.Intent
+import android.content.ServiceConnection
+import android.content.pm.PackageManager
 import android.media.AudioManager
+import android.os.Build
 import android.os.Bundle
+import android.os.IBinder
 import android.view.WindowManager
 import androidx.activity.ComponentActivity
+import androidx.activity.compose.rememberLauncherForActivityResult
 import androidx.activity.compose.setContent
+import androidx.activity.result.contract.ActivityResultContracts
 import androidx.compose.foundation.background
 import androidx.compose.foundation.layout.*
 import androidx.compose.foundation.rememberScrollState
@@ -26,31 +35,55 @@ import androidx.compose.ui.text.font.FontWeight
 import androidx.compose.ui.text.input.KeyboardType
 import androidx.compose.ui.unit.dp
 import androidx.compose.ui.unit.sp
+import androidx.core.content.ContextCompat
 import androidx.core.content.edit
 import org.webrtc.PeerConnection
 
 class MainActivity : ComponentActivity() {
 
-    private lateinit var client: WebRtcClient
+    private var service: AudioForegroundService? = null
+    private var bound = false
+
+    private val conn = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
+            val b = binder as AudioForegroundService.LocalBinder
+            service = b.service
+            bound = true
+            // Repassa o listener configurado na UI assim que o servico estiver disponivel
+            pendingListener?.let { service?.listener = it }
+        }
+
+        override fun onServiceDisconnected(name: ComponentName?) {
+            bound = false
+            service = null
+        }
+    }
+
+    private var pendingListener: WebRtcClient.Listener? = null
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)
 
-        // Recomenda ao Android usar fluxo de musica em modo "low latency" sempre que possivel
         val am = getSystemService(AUDIO_SERVICE) as AudioManager
         am.mode = AudioManager.MODE_NORMAL
 
-        client = WebRtcClient(this)
-
         val prefs = getSharedPreferences("pcaudio", Context.MODE_PRIVATE)
         val savedIp = prefs.getString("ip", "192.168.0.100") ?: "192.168.0.100"
+
+        // Garante que o servico esteja em pe (necessario p/ bindar)
+        val svcIntent = Intent(this, AudioForegroundService::class.java)
+        ContextCompat.startForegroundService(this, svcIntent)
+        bindService(svcIntent, conn, Context.BIND_AUTO_CREATE)
 
         setContent { AppUI(savedIp, prefs) }
     }
 
     override fun onDestroy() {
-        client.release()
+        if (bound) {
+            try { unbindService(conn) } catch (_: Exception) {}
+            bound = false
+        }
         super.onDestroy()
     }
 
@@ -70,13 +103,30 @@ class MainActivity : ComponentActivity() {
         val isConnecting = connState == PeerConnection.PeerConnectionState.CONNECTING
         val isPlaying = isConnected || isConnecting
 
+        // Pede permissao de notificacao no Android 13+ (foreground service exige)
+        val notifPermLauncher = rememberLauncherForActivityResult(
+            ActivityResultContracts.RequestPermission()
+        ) { /* ignora resultado — servico funciona mesmo se o usuario negar */ }
+
+        LaunchedEffect(Unit) {
+            if (Build.VERSION.SDK_INT >= 33) {
+                if (ContextCompat.checkSelfPermission(
+                        this@MainActivity, Manifest.permission.POST_NOTIFICATIONS
+                    ) != PackageManager.PERMISSION_GRANTED
+                ) {
+                    notifPermLauncher.launch(Manifest.permission.POST_NOTIFICATIONS)
+                }
+            }
+        }
+
         DisposableEffect(Unit) {
-            client.listener = object : WebRtcClient.Listener {
+            val listener = object : WebRtcClient.Listener {
                 override fun onConnectionStateChanged(state: PeerConnection.PeerConnectionState) {
                     connState = state
+                    service?.updateConnectionState(state)
                     if (state == PeerConnection.PeerConnectionState.FAILED ||
                         state == PeerConnection.PeerConnectionState.DISCONNECTED) {
-                        errorMsg = "Conexão perdida"
+                        errorMsg = "Conexão perdida — verifique o servidor e a rede"
                     }
                 }
                 override fun onStatsUpdate(s: WebRtcClient.StreamStats) { stats = s }
@@ -85,7 +135,12 @@ class MainActivity : ComponentActivity() {
                     connState = PeerConnection.PeerConnectionState.FAILED
                 }
             }
-            onDispose { client.listener = null }
+            pendingListener = listener
+            service?.listener = listener
+            onDispose {
+                if (service?.listener === listener) service?.listener = null
+                pendingListener = null
+            }
         }
 
         val bg = Color(0xFF07070F)
@@ -119,7 +174,6 @@ class MainActivity : ComponentActivity() {
                         shape = RoundedCornerShape(22.dp),
                     ) {
                         Column(Modifier.padding(22.dp)) {
-                            // Header
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Text("🎉 PC Audio Stream",
                                     color = accent, fontSize = 22.sp,
@@ -131,11 +185,10 @@ class MainActivity : ComponentActivity() {
                                     Text("NATIVO", color = accent, fontSize = 10.sp, fontWeight = FontWeight.Bold)
                                 }
                             }
-                            Text("WebRTC + AAudio low-latency",
+                            Text("WebRTC + AAudio · Foreground Service",
                                 color = Color(0xFF555555), fontSize = 12.sp)
                             Spacer(Modifier.height(20.dp))
 
-                            // Status badges
                             Row(horizontalArrangement = Arrangement.spacedBy(8.dp)) {
                                 StatusBadge(
                                     text = when (connState) {
@@ -160,7 +213,6 @@ class MainActivity : ComponentActivity() {
                             }
                             Spacer(Modifier.height(20.dp))
 
-                            // IP + porta
                             Text("Endereço do servidor",
                                 color = Color(0xFF666666), fontSize = 12.sp)
                             Spacer(Modifier.height(6.dp))
@@ -186,7 +238,6 @@ class MainActivity : ComponentActivity() {
                             }
                             Spacer(Modifier.height(16.dp))
 
-                            // Qualidade
                             Text("Qualidade (bitrate opus)",
                                 color = Color(0xFF666666), fontSize = 12.sp)
                             Spacer(Modifier.height(6.dp))
@@ -216,7 +267,6 @@ class MainActivity : ComponentActivity() {
                             }
                             Spacer(Modifier.height(16.dp))
 
-                            // Stereo switch
                             Row(verticalAlignment = Alignment.CenterVertically) {
                                 Switch(
                                     checked = stereo,
@@ -228,20 +278,19 @@ class MainActivity : ComponentActivity() {
                             }
                             Spacer(Modifier.height(20.dp))
 
-                            // Botão play/stop
                             Button(
                                 onClick = {
                                     errorMsg = null
                                     if (isPlaying) {
-                                        client.disconnect()
+                                        service?.disconnect()
                                         connState = PeerConnection.PeerConnectionState.NEW
                                     } else {
                                         val url = "http://${ip.trim()}:${port.trim()}"
-                                        client.connect(url, quality, stereo)
+                                        service?.connect(url, quality, stereo)
                                         connState = PeerConnection.PeerConnectionState.CONNECTING
                                     }
                                 },
-                                enabled = ip.isNotBlank() && port.isNotBlank(),
+                                enabled = ip.isNotBlank() && port.isNotBlank() && service != null,
                                 colors = ButtonDefaults.buttonColors(
                                     containerColor = if (isPlaying) danger else accent
                                 ),
@@ -264,7 +313,6 @@ class MainActivity : ComponentActivity() {
                                 Text("⚠ $it", color = danger, fontSize = 12.sp)
                             }
 
-                            // Stats ao vivo
                             if (isConnected) {
                                 Spacer(Modifier.height(20.dp))
                                 Divider(color = border)
@@ -288,7 +336,7 @@ class MainActivity : ComponentActivity() {
                     }
 
                     Spacer(Modifier.height(16.dp))
-                    Text("Pipeline nativa AAudio • sem Web Audio",
+                    Text("Foreground · WifiLock HIGH_PERF · WakeLock CPU",
                         color = Color(0xFF444444), fontSize = 10.sp)
                 }
             }

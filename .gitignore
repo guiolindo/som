@@ -16,3 +16,7 @@ android/app/release/
 
 # Editor
 .vscode/
+
+# Artefatos baixados do GitHub Actions
+*.apk
+*.zip
