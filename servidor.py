@@ -420,19 +420,59 @@ def get_local_ip() -> str:
 
 
 def get_all_ips() -> list:
-    ips = []
+    """Pega TODOS os IPs IPv4 do PC.
+
+    Combina varias tecnicas porque nenhuma sozinha pega todas as interfaces
+    no Windows (especialmente hotspot/tethering de celular).
+    """
+    ips = set()
+
+    # 1) Resolucao do hostname
     try:
         for info in socket.getaddrinfo(socket.gethostname(), None, socket.AF_INET):
             ip = info[4][0]
-            if not ip.startswith("127.") and ip not in ips:
-                ips.append(ip)
+            if not ip.startswith("127.") and not ip.startswith("169.254."):
+                ips.add(ip)
     except Exception:
         pass
+
+    # 2) ipconfig do Windows (pega TODAS as interfaces, inclusive hotspot)
+    try:
+        import subprocess
+        out = subprocess.run(
+            ["ipconfig"], capture_output=True, text=True,
+            encoding="cp850", errors="ignore", timeout=5,
+        ).stdout
+        import re
+        # Aceita "IPv4 Address" / "Endere..." / "Direccion IPv4" etc
+        for m in re.finditer(r":\s*((?:\d{1,3}\.){3}\d{1,3})\b", out):
+            ip = m.group(1)
+            if (not ip.startswith("127.") and not ip.startswith("169.254.")
+                    and not ip.startswith("0.")):
+                ips.add(ip)
+    except Exception:
+        pass
+
+    # 3) IP da rota default (primario)
     primary = get_local_ip()
+    if primary and primary != "127.0.0.1":
+        ips.add(primary)
+
+    # Ordena: rota default primeiro, depois faixas privadas mais comuns
+    result = []
     if primary in ips:
-        ips.remove(primary)
-    ips.insert(0, primary)
-    return ips
+        result.append(primary)
+        ips.discard(primary)
+    # Hotspot do Android costuma ser 192.168.43.x, iPhone 172.20.10.x
+    pref = sorted(ips, key=lambda x: (
+        0 if x.startswith("192.168.43.") else
+        0 if x.startswith("172.20.10.") else
+        1 if x.startswith("192.168.") else
+        2 if x.startswith("10.") else
+        3 if x.startswith("172.") else 4
+    ))
+    result.extend(pref)
+    return result
 
 
 # ---------------------------------------------------------------------------
@@ -595,10 +635,9 @@ def print_banner(ips):
 async def main():
     global main_loop, audio_queue, capture_running
     main_loop = asyncio.get_running_loop()
-    # Fila com folga: jitter buffer real fica no cliente WebRTC.
-    # 20 frames * 20ms = 400ms de margem pra absorver pause de GC do Python,
-    # jitter de asyncio, etc. Sem isso, qualquer hiccup vira drop -> picota.
-    audio_queue = asyncio.Queue(maxsize=20)
+    # Fila com folga grande: 50 frames * 20ms = 1s de margem.
+    # Suficiente p/ absorver pause de GC, jitter de asyncio, hiccup de WiFi.
+    audio_queue = asyncio.Queue(maxsize=50)
 
     patch_opus_for_lowlatency()
     threading.Thread(target=capture_thread, daemon=True).start()

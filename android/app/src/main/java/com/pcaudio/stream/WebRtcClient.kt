@@ -40,6 +40,13 @@ class WebRtcClient(private val context: Context) {
     private var factory: PeerConnectionFactory? = null
     private var pc: PeerConnection? = null
     private var statsJob: Job? = null
+    private var reconnectJob: Job? = null
+
+    // Salvo p/ auto-reconectar
+    private var lastUrl: String? = null
+    private var lastQuality: String = "ultra"
+    private var lastStereo: Boolean = true
+    private var userDisconnected: Boolean = false
 
     private val http = OkHttpClient.Builder()
         .connectTimeout(5, TimeUnit.SECONDS)
@@ -50,6 +57,11 @@ class WebRtcClient(private val context: Context) {
     private var lastStatsTime = 0L
 
     fun connect(serverUrl: String, quality: String = "ultra", stereo: Boolean = true) {
+        userDisconnected = false
+        lastUrl = serverUrl
+        lastQuality = quality
+        lastStereo = stereo
+        reconnectJob?.cancel()
         scope.launch {
             try {
                 initFactory()
@@ -58,15 +70,36 @@ class WebRtcClient(private val context: Context) {
                 withContext(Dispatchers.Main) {
                     listener?.onError("Falha ao conectar: ${e.message}")
                 }
+                scheduleReconnect(2000)
             }
         }
     }
 
     fun disconnect() {
+        userDisconnected = true
+        reconnectJob?.cancel()
+        reconnectJob = null
         statsJob?.cancel()
         statsJob = null
         pc?.close()
         pc = null
+    }
+
+    private fun scheduleReconnect(delayMs: Long) {
+        if (userDisconnected || lastUrl == null) return
+        reconnectJob?.cancel()
+        reconnectJob = scope.launch {
+            delay(delayMs)
+            if (userDisconnected) return@launch
+            try { pc?.close() } catch (_: Exception) {}
+            pc = null
+            try {
+                doConnect(lastUrl!!, lastQuality, lastStereo)
+            } catch (e: Exception) {
+                // Tenta de novo em 3s (backoff suave)
+                scheduleReconnect(3000)
+            }
+        }
     }
 
     fun release() {
@@ -137,7 +170,17 @@ class WebRtcClient(private val context: Context) {
             override fun onConnectionChange(s: PeerConnection.PeerConnectionState?) {
                 s?.let { state ->
                     scope.launch(Dispatchers.Main) { listener?.onConnectionStateChanged(state) }
-                    if (state == PeerConnection.PeerConnectionState.CONNECTED) startStatsCollection()
+                    when (state) {
+                        PeerConnection.PeerConnectionState.CONNECTED -> startStatsCollection()
+                        PeerConnection.PeerConnectionState.DISCONNECTED,
+                        PeerConnection.PeerConnectionState.FAILED -> {
+                            // Reconecta automaticamente em 1.5s.
+                            // Isso elimina a maioria dos "do nada trava" — ICE
+                            // restart e mais rapido que ficar esperando recovery.
+                            scheduleReconnect(1500)
+                        }
+                        else -> {}
+                    }
                 }
             }
         }) ?: throw IllegalStateException("Falhou ao criar PeerConnection")
